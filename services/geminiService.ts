@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const getClient = () => {
     const apiKey = process.env.API_KEY;
@@ -6,55 +6,88 @@ const getClient = () => {
     return new GoogleGenAI({ apiKey });
 };
 
-// Converts a base64 string (dataURL) to the format Gemini expects
-const base64ToPart = (base64Str: string) => {
-    // Remove "data:image/jpeg;base64," prefix
-    const base64Data = base64Str.split(',')[1];
-    const mimeType = base64Str.split(';')[0].split(':')[1];
-    return {
-        inlineData: {
-            data: base64Data,
-            mimeType: mimeType
-        }
-    };
+// Helper to convert a URL (data: or blob:) to a GoogleGenAI Part object
+const urlToGenerativePart = async (url: string) => {
+    // If it's a data URL, we can extract directly
+    if (url.startsWith('data:')) {
+        const base64Data = url.split(',')[1];
+        const mimeType = url.split(';')[0].split(':')[1];
+        return {
+            inlineData: {
+                data: base64Data,
+                mimeType: mimeType
+            }
+        };
+    }
+
+    // If it's a blob URL or other fetchable URL, fetch and convert
+    try {
+        const response = await fetch(url);
+        const blob = await response.blob();
+        
+        return new Promise<any>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result as string;
+                // FileReader result is "data:mime;base64,data..."
+                const base64Data = base64String.split(',')[1];
+                resolve({
+                    inlineData: {
+                        data: base64Data,
+                        mimeType: blob.type || 'image/jpeg' // Fallback if type is missing
+                    }
+                });
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error("Error converting URL to part:", error);
+        throw error;
+    }
 };
 
-export const getAutoCropSuggestion = async (imageBase64: string): Promise<{x: number, y: number, width: number, height: number} | null> => {
+export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: number, y: number, width: number, height: number} | null> => {
     try {
         const ai = getClient();
+        const imagePart = await urlToGenerativePart(imageUrl);
         
-        // Define schema for the coordinate return
-        const responseSchema: Schema = {
-             type: Type.OBJECT,
-             properties: {
-                 ymin: { type: Type.NUMBER, description: "Top edge percentage (0-100)" },
-                 xmin: { type: Type.NUMBER, description: "Left edge percentage (0-100)" },
-                 ymax: { type: Type.NUMBER, description: "Bottom edge percentage (0-100)" },
-                 xmax: { type: Type.NUMBER, description: "Right edge percentage (0-100)" },
-             },
-             required: ["ymin", "xmin", "ymax", "xmax"],
-        };
-
+        // Use gemini-3-flash-preview which supports JSON schema enforcement
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: 'gemini-3-flash-preview',
             contents: {
                 parts: [
-                    base64ToPart(imageBase64),
-                    { text: "Detect the main document or paper in this image. Return the bounding box coordinates as percentages (0-100) of the image dimensions. Ensure tight cropping around the paper content." }
+                    imagePart,
+                    { text: "Detect the main document/paper in this image. Return the bounding box coordinates where ymin, xmin, ymax, xmax are percentages (0-100) of the image dimensions." }
                 ]
             },
             config: {
                 responseMimeType: "application/json",
-                responseSchema: responseSchema,
-                systemInstruction: "You are a document scanner assistant. Analyze the image and find the corners of the paper document."
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        ymin: { type: Type.NUMBER, description: "Top edge percentage (0-100)" },
+                        xmin: { type: Type.NUMBER, description: "Left edge percentage (0-100)" },
+                        ymax: { type: Type.NUMBER, description: "Bottom edge percentage (0-100)" },
+                        xmax: { type: Type.NUMBER, description: "Right edge percentage (0-100)" },
+                    },
+                    required: ["ymin", "xmin", "ymax", "xmax"],
+                }
             }
         });
 
         const text = response.text;
         if (!text) return null;
 
+        // With responseMimeType, text is guaranteed to be valid JSON
         const data = JSON.parse(text);
         
+        // Validate expected keys
+        if (typeof data.xmin !== 'number' || typeof data.ymin !== 'number') {
+             console.warn("Invalid JSON structure returned", data);
+             return null;
+        }
+
         // Convert ymin/xmin/ymax/xmax to x, y, width, height format
         const width = data.xmax - data.xmin;
         const height = data.ymax - data.ymin;
@@ -72,15 +105,17 @@ export const getAutoCropSuggestion = async (imageBase64: string): Promise<{x: nu
     }
 };
 
-export const extractTextWithOCR = async (imageBase64: string): Promise<string> => {
+export const extractTextWithOCR = async (imageUrl: string): Promise<string> => {
     try {
         const ai = getClient();
+        const imagePart = await urlToGenerativePart(imageUrl);
+
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
+            model: 'gemini-3-flash-preview',
             contents: {
                 parts: [
-                    base64ToPart(imageBase64),
-                    { text: "Extract all readable text from this document image. formatting it nicely." }
+                    imagePart,
+                    { text: "Extract all readable text from this document image. Return clean, formatted text." }
                 ]
             }
         });
