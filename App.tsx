@@ -9,14 +9,16 @@ import {
   FileCheck,
   ArrowLeft,
   Loader2,
-  Maximize2
+  Maximize2,
+  Table as TableIcon
 } from 'lucide-react';
 
 import FileUpload from './components/FileUpload';
 import CropModal from './components/CropModal';
 import OCRModal from './components/OCRModal';
+import TableModal from './components/TableModal';
 import { convertPdfToImages, cropImage, generatePdfFromPages, downloadPdf } from './services/pdfService';
-import { extractTextWithOCR } from './services/geminiService';
+import { extractTextWithOCR, extractTableData } from './services/geminiService';
 import { PageData, AppState, PixelCrop, CropArea } from './types';
 
 function App() {
@@ -30,6 +32,11 @@ function App() {
   const [ocrTargetId, setOcrTargetId] = useState<string | null>(null);
   const [ocrResult, setOcrResult] = useState<string>('');
   const [isOcrLoading, setIsOcrLoading] = useState(false);
+
+  // Table Extraction State
+  const [tableTargetId, setTableTargetId] = useState<string | null>(null);
+  const [tableResult, setTableResult] = useState<string>('');
+  const [isTableLoading, setIsTableLoading] = useState(false);
 
   // Handle Files Input
   const handleFilesSelected = async (files: File[]) => {
@@ -109,8 +116,6 @@ function App() {
     const page = pages.find(p => p.id === id);
     if (!page) return;
     
-    // If we already have OCR text, just show it. 
-    // Usually OCR is expensive/slow so we might want to cache it.
     if (page.ocrText) {
         setOcrResult(page.ocrText);
         setOcrTargetId(id);
@@ -118,19 +123,15 @@ function App() {
     }
 
     setIsOcrLoading(true);
-    // Determine which image to use (cropped or original)
     const imageToUse = page.croppedUrl || page.originalUrl;
     
     try {
-        // Optimistically show modal with loading state?
-        // Or show loader on button? Let's show loader on button mostly, but here we block.
-        setOcrTargetId(id); // Open modal but show loading inside? 
-        // Better: Wait for text then show modal.
+        // Set loading target to show spinner on specific button
+        setOcrTargetId(id); 
         
         const text = await extractTextWithOCR(imageToUse);
         setOcrResult(text);
         
-        // Save to state
         setPages(prev => prev.map(p => p.id === id ? { ...p, ocrText: text } : p));
         
     } catch (e) {
@@ -138,6 +139,37 @@ function App() {
         setOcrTargetId(null);
     } finally {
         setIsOcrLoading(false);
+    }
+  };
+
+  // Table Extraction Handler
+  const handleExtractTable = async (id: string) => {
+    const page = pages.find(p => p.id === id);
+    if (!page) return;
+
+    setIsTableLoading(true);
+    setTableTargetId(id); // used to show loading state
+
+    const imageToUse = page.croppedUrl || page.originalUrl;
+
+    try {
+        const csv = await extractTableData(imageToUse);
+        
+        if (!csv || csv.includes("NO_TABLES") || csv === "ERROR") {
+            alert("No tables were detected in this image.");
+            setTableTargetId(null);
+        } else {
+            setTableResult(csv);
+            // We keep tableTargetId set so we know which modal to open, 
+            // but we need a separate state or just use tableTargetId check in render 
+            // combined with !isTableLoading
+        }
+    } catch (e) {
+        console.error("Table extraction failed", e);
+        alert("Failed to extract table.");
+        setTableTargetId(null);
+    } finally {
+        setIsTableLoading(false);
     }
   };
 
@@ -233,7 +265,7 @@ function App() {
                             </div>
 
                             {/* Actions Toolbar */}
-                            <div className="p-3 bg-white border-t flex justify-around items-center gap-2">
+                            <div className="p-3 bg-white border-t flex justify-around items-center gap-1">
                                 <button 
                                     onClick={() => handleOpenCrop(page.id)}
                                     className="p-2 hover:bg-indigo-50 text-gray-600 hover:text-indigo-600 rounded-lg transition-colors tooltip"
@@ -241,6 +273,7 @@ function App() {
                                 >
                                     <Crop size={18} />
                                 </button>
+                                
                                 <button 
                                     onClick={() => handleOpenOCR(page.id)}
                                     className="p-2 hover:bg-indigo-50 text-gray-600 hover:text-indigo-600 rounded-lg transition-colors"
@@ -252,7 +285,20 @@ function App() {
                                         <Type size={18} />
                                     )}
                                 </button>
-                                <div className="w-px h-6 bg-gray-200"></div>
+
+                                <button 
+                                    onClick={() => handleExtractTable(page.id)}
+                                    className="p-2 hover:bg-indigo-50 text-gray-600 hover:text-indigo-600 rounded-lg transition-colors"
+                                    title="Extract Table to Excel"
+                                >
+                                    {isTableLoading && tableTargetId === page.id ? (
+                                        <Loader2 className="animate-spin" size={18} />
+                                    ) : (
+                                        <TableIcon size={18} />
+                                    )}
+                                </button>
+
+                                <div className="w-px h-6 bg-gray-200 mx-1"></div>
                                 <button 
                                     onClick={() => handleDeletePage(page.id)}
                                     className="p-2 hover:bg-red-50 text-gray-600 hover:text-red-500 rounded-lg transition-colors"
@@ -293,6 +339,16 @@ function App() {
         <OCRModal 
             text={ocrResult}
             onClose={() => setOcrTargetId(null)}
+        />
+      )}
+      
+      {tableTargetId && !isTableLoading && tableResult && (
+        <TableModal 
+            csvData={tableResult}
+            onClose={() => {
+                setTableTargetId(null);
+                setTableResult('');
+            }}
         />
       )}
     </div>

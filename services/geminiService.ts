@@ -126,3 +126,30 @@ export const extractTextWithOCR = async (imageUrl: string): Promise<string> => {
         return "Failed to extract text.";
     }
 };
+
+export const extractTableData = async (imageUrl: string): Promise<string> => {
+    try {
+        const ai = getClient();
+        const imagePart = await urlToGenerativePart(imageUrl);
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: {
+                parts: [
+                    imagePart,
+                    { text: "Identify any tables in this image. Extract the table data and return it in CSV format. If there are multiple tables, separate them with '---TABLE---'. If no tables are found, return 'NO_TABLES'. Do not include markdown formatting code blocks, just return raw CSV text." }
+                ]
+            }
+        });
+
+        let text = response.text || "NO_TABLES";
+        
+        // Clean up markdown code blocks if present
+        text = text.replace(/^```csv\n/, '').replace(/^```\n/, '').replace(/\n```$/, '');
+        
+        return text;
+    } catch (error) {
+        console.error("Gemini Table Extraction Error:", error);
+        return "ERROR";
+    }
+};
