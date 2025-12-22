@@ -76,8 +76,19 @@ export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: numbe
             }
         });
 
-        const text = response.text;
+        let text = response.text;
         if (!text) return null;
+
+        // SANITIZATION: Remove markdown code blocks if present (e.g., ```json ... ```)
+        text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+        // SANITIZATION: Extract only the JSON object substring to ignore trailing characters
+        const firstBrace = text.indexOf('{');
+        const lastBrace = text.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            text = text.substring(firstBrace, lastBrace + 1);
+        }
 
         // With responseMimeType, text is guaranteed to be valid JSON
         const data = JSON.parse(text);
@@ -144,8 +155,8 @@ export const extractTableData = async (imageUrl: string): Promise<string> => {
 
         let text = response.text || "NO_TABLES";
         
-        // Clean up markdown code blocks if present
-        text = text.replace(/^```csv\n/, '').replace(/^```\n/, '').replace(/\n```$/, '');
+        // Robust cleaning for CSV: remove markdown blocks
+        text = text.replace(/```csv/gi, '').replace(/```/g, '').trim();
         
         return text;
     } catch (error) {
