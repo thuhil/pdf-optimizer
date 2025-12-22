@@ -2,14 +2,14 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import { PageData } from '../types';
 
-// Handle potential default export structure from ESM CDN
+// Handle potential default export structure from ESM CDN or bundler
 const pdfjs = (pdfjsLib as any).default || pdfjsLib;
 
 // Initialize PDF.js worker
-// We explicitly set the worker source to the CDN version that matches our import map (3.11.174)
+// Dynamically set the worker source to match the loaded library version
 try {
   if (pdfjs.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
   }
 } catch (e) {
   console.error("Failed to set PDF worker source", e);
