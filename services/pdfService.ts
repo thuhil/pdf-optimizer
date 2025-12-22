@@ -6,10 +6,10 @@ import { PageData } from '../types';
 const pdfjs = (pdfjsLib as any).default || pdfjsLib;
 
 // Initialize PDF.js worker
-// Dynamically set the worker source to match the loaded library version
 try {
   if (pdfjs.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+      // Hardcode the worker URL to match your package.json version (5.4.449)
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.449/build/pdf.worker.min.js`;
   }
 } catch (e) {
   console.error("Failed to set PDF worker source", e);
