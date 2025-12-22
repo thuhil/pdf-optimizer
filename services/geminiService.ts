@@ -47,6 +47,52 @@ const urlToGenerativePart = async (url: string) => {
     }
 };
 
+// Robust JSON extractor that handles markdown and trailing garbage
+const parseJSONSafely = (text: string): any => {
+    if (!text) return null;
+    
+    // 1. Remove Markdown code blocks
+    let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+    // 2. Try direct parse first (fastest)
+    try {
+        return JSON.parse(cleanText);
+    } catch (e) {
+        // Continue to robust extraction
+    }
+
+    // 3. Find first JSON object using brace counting
+    const firstOpen = cleanText.indexOf('{');
+    if (firstOpen === -1) return null;
+
+    let balance = 0;
+    let endIndex = -1;
+
+    for (let i = firstOpen; i < cleanText.length; i++) {
+        if (cleanText[i] === '{') {
+            balance++;
+        } else if (cleanText[i] === '}') {
+            balance--;
+            if (balance === 0) {
+                endIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (endIndex !== -1) {
+        const jsonStr = cleanText.substring(firstOpen, endIndex + 1);
+        try {
+            return JSON.parse(jsonStr);
+        } catch (e) {
+            console.error("JSON parse failed even after extraction:", jsonStr);
+            return null;
+        }
+    }
+    
+    return null;
+};
+
 export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: number, y: number, width: number, height: number} | null> => {
     try {
         const ai = getClient();
@@ -76,23 +122,10 @@ export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: numbe
             }
         });
 
-        let text = response.text;
-        if (!text) return null;
-
-        // SANITIZATION: Remove markdown code blocks if present (e.g., ```json ... ```)
-        text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-
-        // SANITIZATION: Extract only the JSON object substring to ignore trailing characters
-        const firstBrace = text.indexOf('{');
-        const lastBrace = text.lastIndexOf('}');
+        const data = parseJSONSafely(response.text || '');
         
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            text = text.substring(firstBrace, lastBrace + 1);
-        }
+        if (!data) return null;
 
-        // With responseMimeType, text is guaranteed to be valid JSON
-        const data = JSON.parse(text);
-        
         // Validate expected keys
         if (typeof data.xmin !== 'number' || typeof data.ymin !== 'number') {
              console.warn("Invalid JSON structure returned", data);
