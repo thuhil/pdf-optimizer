@@ -7,10 +7,9 @@ const pdfjs = (pdfjsLib as any).default || pdfjsLib;
 
 // Initialize PDF.js worker
 try {
-  // Use a specific stable version for the worker to match the import map
-  // v4.8.69 is generally stable for browser-only ESM usage
+  // Use a specific version for the worker to match the installed package (5.4.449)
   if (pdfjs.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.8.69/build/pdf.worker.min.js`;
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.449/build/pdf.worker.min.js`;
   }
 } catch (e) {
   console.error("Failed to set PDF worker source", e);
