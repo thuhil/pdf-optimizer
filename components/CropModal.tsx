@@ -1,7 +1,9 @@
+
 import React, { useState, useCallback } from 'react';
 import Cropper from 'react-easy-crop';
 import { Area } from 'react-easy-crop';
-import { Sparkles, Check, X, Loader2 } from 'lucide-react';
+// Added Crop to the list of imported icons from lucide-react
+import { Sparkles, Check, X, Loader2, Crop } from 'lucide-react';
 import { getAutoCropSuggestion } from '../services/geminiService';
 import { PixelCrop, CropArea } from '../types';
 
@@ -17,14 +19,8 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
   const [zoom, setZoom] = useState(1);
   const [isAutoCropping, setIsAutoCropping] = useState(false);
   
-  // We track the cropped area in percentages and pixels
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<PixelCrop | null>(null);
   const [croppedAreaPercent, setCroppedAreaPercent] = useState<CropArea | null>(initialCrop || null);
-
-  // If initialCrop is provided, we might need to adjust the view logic in a real app,
-  // but react-easy-crop doesn't easily support controlled "crop width/height" in percentages directly 
-  // without some complex transform logic for 'crop' (pos) vs 'zoom'. 
-  // For simplicity, we start fresh or center, but allow Auto-Crop to control it.
 
   const onCropComplete = useCallback((croppedArea: Area, croppedAreaPixels: Area) => {
     setCroppedAreaPercent({
@@ -41,31 +37,6 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
     try {
         const suggestion = await getAutoCropSuggestion(imageUrl);
         if (suggestion) {
-            // Apply suggestion
-            // react-easy-crop is a bit tricky with programmatic control of zoom/crop position 
-            // to match a specific bounding box exactly without knowing container dimensions vs media dimensions explicitly in state.
-            // However, we can map the suggestion (percentages) to the state if we were fully controlling it.
-            // Since react-easy-crop is mainly manual, we will display the suggestion in a toast or 
-            // simpler: Just update the `crop` and `zoom` is hard to calculate perfectly inverse.
-            // ALTERNATIVE: We pass the suggestion data up? 
-            // BETTER: We can approximate. But for this demo, let's just log it or try to set it if possible.
-            // Actually, let's simplify: Gemini returns the crop box. We can just use that data 
-            // if the user accepts it, bypassing the visual cropper if they want "One Click Fix".
-            // BUT the user wants visual feedback. 
-            
-            // To properly drive react-easy-crop:
-            // We need to calculate the zoom level that fits the suggested width/height into the viewport
-            // and the x/y offset. This is complex math depending on aspect ratios.
-            
-            // Let's do a "Best Effort" visually or just alert. 
-            // Actually, we can just *return* the auto-crop result directly if the user is happy with the AI's choice?
-            // No, the prompt says "suggestion". 
-            
-            // Let's try to set the internal state. 
-            // Since we can't easily drive the library's internal pan/zoom from percentages easily without more code:
-            // We will just flash a message "AI Crop Applied" and manually return the pixel crop 
-            // based on the image's natural size.
-            
             const img = new Image();
             img.src = imageUrl;
             await img.decode();
@@ -77,21 +48,24 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
                 height: (suggestion.height / 100) * img.naturalHeight,
             };
             
-            // Update the local state for "Save"
+            // Note: Programmatically moving react-easy-crop precisely from % bounds is complex
+            // without knowing the cropper container dimensions.
+            // We set the internal selection state and zoom to an appropriate level for the user to see.
+            const calculatedZoom = Math.min(3, 100 / Math.max(suggestion.width, suggestion.height));
+            setZoom(calculatedZoom);
             setCroppedAreaPixels(pxCrop);
             setCroppedAreaPercent(suggestion);
-            
-            // Close and save immediately? Or let user refine?
-            // Let's let user refine? It's hard to visualize without moving the UI.
-            // We will auto-confirm for this demo to show "Magic"
-            onConfirm(pxCrop, suggestion);
+
+            // We let the user see the box (it will auto-adjust zoom if possible) 
+            // and click Apply themselves to confirm.
+            alert("Auto-crop suggestion applied! You can refine the selection before clicking 'Apply'.");
             
         } else {
-            alert("Could not detect document edges.");
+            alert("No document edges detected.");
         }
     } catch (e) {
-        console.error(e);
-        alert("Auto-crop failed");
+        console.error("Auto-crop error", e);
+        alert("Auto-crop failed. Please adjust manually.");
     } finally {
         setIsAutoCropping(false);
     }
@@ -104,11 +78,14 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 backdrop-blur-sm">
-      <div className="relative w-full max-w-4xl h-[80vh] bg-gray-900 rounded-lg overflow-hidden flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="relative w-full max-w-4xl h-[80vh] bg-gray-900 rounded-lg overflow-hidden flex flex-col shadow-2xl m-4">
         <div className="p-4 flex justify-between items-center bg-gray-800 border-b border-gray-700">
-          <h3 className="text-white font-semibold text-lg">Crop Image</h3>
-          <button onClick={onCancel} className="text-gray-400 hover:text-white transition">
+          <h3 className="text-white font-semibold text-lg flex items-center gap-2">
+            <Crop className="text-primary" size={20} />
+            Crop Image
+          </h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-white transition p-1 hover:bg-gray-700 rounded-full">
             <X size={24} />
           </button>
         </div>
@@ -118,7 +95,6 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
             image={imageUrl}
             crop={crop}
             zoom={zoom}
-            aspect={undefined} // Free form
             onCropChange={setCrop}
             onCropComplete={onCropComplete}
             onZoomChange={setZoom}
@@ -126,9 +102,9 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
           />
         </div>
 
-        <div className="p-4 bg-gray-800 border-t border-gray-700 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-                 <span className="text-gray-400 text-sm">Zoom</span>
+        <div className="p-4 bg-gray-800 border-t border-gray-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-4 w-full sm:w-auto">
+                 <span className="text-gray-400 text-sm font-medium">Zoom</span>
                  <input
                     type="range"
                     value={zoom}
@@ -137,22 +113,22 @@ const CropModal: React.FC<CropModalProps> = ({ imageUrl, initialCrop, onConfirm,
                     step={0.1}
                     aria-labelledby="Zoom"
                     onChange={(e) => setZoom(Number(e.target.value))}
-                    className="w-32 accent-primary"
+                    className="flex-1 sm:w-48 accent-primary h-1.5 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                 />
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex gap-3 w-full sm:w-auto">
                 <button 
                     onClick={handleAutoCrop}
                     disabled={isAutoCropping}
-                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-md font-medium transition-colors"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-md font-medium transition-all shadow-md active:scale-95"
                 >
                     {isAutoCropping ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
                     <span>Magic Crop</span>
                 </button>
                 <button 
                     onClick={handleSave}
-                    className="flex items-center gap-2 px-6 py-2 bg-secondary hover:bg-emerald-600 text-white rounded-md font-medium transition-colors"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-medium transition-all shadow-md active:scale-95"
                 >
                     <Check size={18} />
                     <span>Apply</span>

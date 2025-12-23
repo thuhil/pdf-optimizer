@@ -8,7 +8,7 @@ const getClient = () => {
 
 // Helper to convert a URL (data: or blob:) to a GoogleGenAI Part object
 const urlToGenerativePart = async (url: string) => {
-    // If it's a data URL, we can extract directly
+    // If it's a data URL, extract directly
     if (url.startsWith('data:')) {
         const base64Data = url.split(',')[1];
         const mimeType = url.split(';')[0].split(':')[1];
@@ -29,12 +29,11 @@ const urlToGenerativePart = async (url: string) => {
             const reader = new FileReader();
             reader.onloadend = () => {
                 const base64String = reader.result as string;
-                // FileReader result is "data:mime;base64,data..."
                 const base64Data = base64String.split(',')[1];
                 resolve({
                     inlineData: {
                         data: base64Data,
-                        mimeType: blob.type || 'image/jpeg' // Fallback if type is missing
+                        mimeType: blob.type || 'image/jpeg'
                     }
                 });
             };
@@ -51,10 +50,10 @@ const urlToGenerativePart = async (url: string) => {
 const parseJSONSafely = (text: string): any => {
     if (!text) return null;
     
-    // 1. Remove Markdown code blocks
-    let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+    // 1. Remove Markdown code blocks with flexible whitespace handling
+    let cleanText = text.replace(/```\s*json/gi, '').replace(/```/g, '').trim();
 
-    // 2. Try direct parse first (fastest)
+    // 2. Try direct parse first
     try {
         return JSON.parse(cleanText);
     } catch (e) {
@@ -98,13 +97,12 @@ export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: numbe
         const ai = getClient();
         const imagePart = await urlToGenerativePart(imageUrl);
         
-        // Use gemini-3-flash-preview which supports JSON schema enforcement
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
             contents: {
                 parts: [
                     imagePart,
-                    { text: "Detect the main document/paper in this image. Return the bounding box coordinates where ymin, xmin, ymax, xmax are percentages (0-100) of the image dimensions." }
+                    { text: "Detect the main document/paper in this image. Return a JSON object with percentages for ymin, xmin, ymax, xmax (0-100)." }
                 ]
             },
             config: {
@@ -112,10 +110,10 @@ export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: numbe
                 responseSchema: {
                     type: Type.OBJECT,
                     properties: {
-                        ymin: { type: Type.NUMBER, description: "Top edge percentage (0-100)" },
-                        xmin: { type: Type.NUMBER, description: "Left edge percentage (0-100)" },
-                        ymax: { type: Type.NUMBER, description: "Bottom edge percentage (0-100)" },
-                        xmax: { type: Type.NUMBER, description: "Right edge percentage (0-100)" },
+                        ymin: { type: Type.NUMBER, description: "Top edge %" },
+                        xmin: { type: Type.NUMBER, description: "Left edge %" },
+                        ymax: { type: Type.NUMBER, description: "Bottom edge %" },
+                        xmax: { type: Type.NUMBER, description: "Right edge %" },
                     },
                     required: ["ymin", "xmin", "ymax", "xmax"],
                 }
@@ -123,22 +121,20 @@ export const getAutoCropSuggestion = async (imageUrl: string): Promise<{x: numbe
         });
 
         const data = parseJSONSafely(response.text || '');
-        
         if (!data) return null;
 
-        // Validate expected keys
-        if (typeof data.xmin !== 'number' || typeof data.ymin !== 'number') {
-             console.warn("Invalid JSON structure returned", data);
-             return null;
-        }
-
-        // Convert ymin/xmin/ymax/xmax to x, y, width, height format
-        const width = data.xmax - data.xmin;
-        const height = data.ymax - data.ymin;
+        // Ensure valid coordinates
+        const xmin = Math.max(0, data.xmin);
+        const ymin = Math.max(0, data.ymin);
+        const xmax = Math.min(100, data.xmax);
+        const ymax = Math.min(100, data.ymax);
+        
+        const width = Math.max(1, xmax - xmin);
+        const height = Math.max(1, ymax - ymin);
         
         return {
-            x: data.xmin,
-            y: data.ymin,
+            x: xmin,
+            y: ymin,
             width: width,
             height: height
         };
@@ -181,16 +177,13 @@ export const extractTableData = async (imageUrl: string): Promise<string> => {
             contents: {
                 parts: [
                     imagePart,
-                    { text: "Identify any tables in this image. Extract the table data and return it in CSV format. If there are multiple tables, separate them with '---TABLE---'. If no tables are found, return 'NO_TABLES'. Do not include markdown formatting code blocks, just return raw CSV text." }
+                    { text: "Identify any tables in this image. Extract the table data and return it in CSV format. No markdown blocks, just raw CSV text. If no tables found, return 'NO_TABLES'." }
                 ]
             }
         });
 
         let text = response.text || "NO_TABLES";
-        
-        // Robust cleaning for CSV: remove markdown blocks
         text = text.replace(/```csv/gi, '').replace(/```/g, '').trim();
-        
         return text;
     } catch (error) {
         console.error("Gemini Table Extraction Error:", error);
