@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { 
   Trash2, 
@@ -10,23 +10,61 @@ import {
   ArrowLeft,
   Loader2,
   Maximize2,
-  Table as TableIcon
+  Table as TableIcon,
+  Sparkles,
+  RotateCcw,
+  RotateCw
 } from 'lucide-react';
 
 import FileUpload from './components/FileUpload';
 import CropModal from './components/CropModal';
 import OCRModal from './components/OCRModal';
 import TableModal from './components/TableModal';
-import { convertPdfToImages, cropImage, generatePdfFromPages, downloadPdf } from './services/pdfService';
-import { extractTextWithOCR, extractTableData } from './services/geminiService';
+import { convertPdfToImages, cropImage, generatePdfFromPages, downloadPdf, getImageDimensions } from './services/pdfService';
+import { extractTextWithOCR, extractTableData, getAutoCropSuggestion } from './services/geminiService';
 import { PageData, AppState, PixelCrop, CropArea } from './types';
 
 function App() {
   const [appState, setAppState] = useState<AppState>(AppState.UPLOAD);
-  const [pages, setPages] = useState<PageData[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   
+  // History Management
+  const [history, setHistory] = useState<PageData[][]>([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  
+  // Derived state for rendering
+  const pages = history[historyIndex];
+
+  // Helper to push new state to history
+  const pushHistory = (newPages: PageData[]) => {
+      const newHistory = history.slice(0, historyIndex + 1);
+      newHistory.push(newPages);
+      setHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+  };
+
+  const handleUndo = useCallback(() => {
+      if (historyIndex > 0) {
+          const newIndex = historyIndex - 1;
+          setHistoryIndex(newIndex);
+          if (history[newIndex].length === 0) {
+              setAppState(AppState.UPLOAD);
+          } else {
+              setAppState(AppState.EDITOR);
+          }
+      }
+  }, [historyIndex, history]);
+
+  const handleRedo = useCallback(() => {
+      if (historyIndex < history.length - 1) {
+          const newIndex = historyIndex + 1;
+          setHistoryIndex(newIndex);
+          if (history[newIndex].length > 0) {
+              setAppState(AppState.EDITOR);
+          }
+      }
+  }, [historyIndex, history]);
+
   // Modals
   const [cropTargetId, setCropTargetId] = useState<string | null>(null);
   const [ocrTargetId, setOcrTargetId] = useState<string | null>(null);
@@ -37,6 +75,34 @@ function App() {
   const [tableTargetId, setTableTargetId] = useState<string | null>(null);
   const [tableResult, setTableResult] = useState<string>('');
   const [isTableLoading, setIsTableLoading] = useState(false);
+
+  // Auto Crop All State
+  const [isAutoCroppingAll, setIsAutoCroppingAll] = useState(false);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if (appState !== AppState.EDITOR) return;
+          if (cropTargetId || ocrTargetId || tableTargetId) return;
+
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+              e.preventDefault();
+              if (e.shiftKey) {
+                  handleRedo();
+              } else {
+                  handleUndo();
+              }
+          }
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+              e.preventDefault();
+              handleRedo();
+          }
+      };
+
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [appState, cropTargetId, ocrTargetId, tableTargetId, handleUndo, handleRedo]);
+
 
   // Handle Files Input
   const handleFilesSelected = async (files: File[]) => {
@@ -62,7 +128,8 @@ function App() {
         }
       }
       
-      setPages(prev => [...prev, ...newPages]);
+      const updatedPages = [...pages, ...newPages];
+      pushHistory(updatedPages);
       setAppState(AppState.EDITOR);
     } catch (error) {
       console.error("Error processing files", error);
@@ -74,8 +141,9 @@ function App() {
 
   // Delete Page
   const handleDeletePage = (id: string) => {
-    setPages(prev => prev.filter(p => p.id !== id));
-    if (pages.length <= 1) {
+    const updatedPages = pages.filter(p => p.id !== id);
+    pushHistory(updatedPages);
+    if (updatedPages.length === 0) {
         setAppState(AppState.UPLOAD);
     }
   };
@@ -104,10 +172,59 @@ function App() {
             crop: percentCrop
         };
         
-        setPages(updatedPages);
+        pushHistory(updatedPages);
         setCropTargetId(null);
     } catch (e) {
         console.error("Crop failed", e);
+    }
+  };
+
+  // Auto Crop All Handler
+  const handleAutoCropAll = async () => {
+    if (pages.length === 0) return;
+    setIsAutoCroppingAll(true);
+
+    try {
+        const updatedPages = await Promise.all(pages.map(async (page) => {
+            try {
+                // 1. Get Suggestion from Gemini
+                const suggestion = await getAutoCropSuggestion(page.originalUrl);
+                
+                if (!suggestion) return page; // No valid suggestion found, return original
+
+                // 2. Get Dimensions to convert % to pixels
+                const dims = await getImageDimensions(page.originalUrl);
+
+                // 3. Calculate Pixel Crop
+                const pixelCrop = {
+                    x: (suggestion.x / 100) * dims.width,
+                    y: (suggestion.y / 100) * dims.height,
+                    width: (suggestion.width / 100) * dims.width,
+                    height: (suggestion.height / 100) * dims.height,
+                };
+
+                // 4. Crop Image
+                const croppedUrl = await cropImage(page.originalUrl, pixelCrop);
+
+                return {
+                    ...page,
+                    croppedUrl: croppedUrl,
+                    crop: suggestion
+                };
+
+            } catch (err) {
+                console.error(`Failed to auto-crop page ${page.id}`, err);
+                return page; // Return original on error
+            }
+        }));
+
+        pushHistory(updatedPages);
+
+    } catch (e) {
+        console.error("Auto Crop All Failed", e);
+        alert("Some pages could not be auto-cropped.");
+    } finally {
+        setIsAutoCroppingAll(false);
     }
   };
 
@@ -132,7 +249,8 @@ function App() {
         const text = await extractTextWithOCR(imageToUse);
         setOcrResult(text);
         
-        setPages(prev => prev.map(p => p.id === id ? { ...p, ocrText: text } : p));
+        const updatedPages = pages.map(p => p.id === id ? { ...p, ocrText: text } : p);
+        pushHistory(updatedPages);
         
     } catch (e) {
         alert("OCR Failed");
@@ -160,9 +278,6 @@ function App() {
             setTableTargetId(null);
         } else {
             setTableResult(csv);
-            // We keep tableTargetId set so we know which modal to open, 
-            // but we need a separate state or just use tableTargetId check in render 
-            // combined with !isTableLoading
         }
     } catch (e) {
         console.error("Table extraction failed", e);
@@ -175,23 +290,27 @@ function App() {
 
   // Export
   const handleExportPdf = async () => {
+    if (pages.length === 0) return;
     setIsProcessing(true);
     try {
         const pdfBytes = await generatePdfFromPages(pages);
-        downloadPdf(pdfBytes, 'modified_document.pdf');
+        if (pdfBytes.length > 0) {
+            downloadPdf(pdfBytes, 'modified_document.pdf');
+        } else {
+            alert("Generated PDF is empty. Please ensure images are valid.");
+        }
     } catch (e) {
-        console.error(e);
-        alert("Failed to generate PDF");
+        console.error("Export Error:", e);
+        alert("Failed to generate PDF. Check console for details.");
     } finally {
         setIsProcessing(false);
     }
   };
 
   const reset = () => {
-    if(confirm("Are you sure? All changes will be lost.")) {
-        setPages([]);
-        setAppState(AppState.UPLOAD);
-    }
+    setHistory([[]]);
+    setHistoryIndex(0);
+    setAppState(AppState.UPLOAD);
   }
 
   // --- RENDER ---
@@ -210,16 +329,45 @@ function App() {
           
           {appState === AppState.EDITOR && (
              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1 mr-2 border-r pr-2 border-gray-300">
+                    <button 
+                        onClick={handleUndo} 
+                        disabled={historyIndex === 0 || isProcessing || isAutoCroppingAll}
+                        className="p-2 text-gray-500 hover:text-gray-800 disabled:opacity-30 disabled:hover:text-gray-500 transition-colors rounded-lg hover:bg-gray-100"
+                        title="Undo (Ctrl+Z)"
+                    >
+                        <RotateCcw size={18} />
+                    </button>
+                    <button 
+                        onClick={handleRedo}
+                        disabled={historyIndex === history.length - 1 || isProcessing || isAutoCroppingAll}
+                        className="p-2 text-gray-500 hover:text-gray-800 disabled:opacity-30 disabled:hover:text-gray-500 transition-colors rounded-lg hover:bg-gray-100"
+                        title="Redo (Ctrl+Y)"
+                    >
+                        <RotateCw size={18} />
+                    </button>
+                </div>
+
                 <button onClick={reset} className="text-sm font-medium text-gray-500 hover:text-red-500 transition px-3 py-2">
                     Start Over
                 </button>
+                
+                <button 
+                    onClick={handleAutoCropAll}
+                    disabled={isAutoCroppingAll || isProcessing}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    {isAutoCroppingAll ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                    <span className="hidden sm:inline">{isAutoCroppingAll ? 'Processing...' : 'Auto Crop All'}</span>
+                </button>
+
                 <button 
                     onClick={handleExportPdf}
-                    disabled={isProcessing}
-                    className="flex items-center gap-2 bg-primary hover:bg-indigo-700 text-white px-5 py-2 rounded-lg font-medium shadow-md transition-all active:scale-95 disabled:opacity-70"
+                    disabled={isProcessing || isAutoCroppingAll}
+                    className="flex items-center gap-2 bg-primary hover:bg-indigo-700 text-white px-5 py-2 rounded-lg font-medium shadow-md transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed"
                 >
                     {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <Download size={18} />}
-                    Export PDF
+                    {isProcessing ? 'Processing...' : 'Export PDF'}
                 </button>
              </div>
           )}
@@ -244,7 +392,7 @@ function App() {
             )}
 
             {appState === AppState.EDITOR && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-20">
+                <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-20 ${isAutoCroppingAll ? 'pointer-events-none opacity-80' : ''}`}>
                     {pages.map((page, index) => (
                         <div key={page.id} className="group relative bg-white rounded-xl shadow-sm hover:shadow-xl transition-all duration-300 border border-gray-200 overflow-hidden flex flex-col">
                             {/* Image Preview */}
