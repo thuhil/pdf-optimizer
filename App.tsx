@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { 
   Trash2, 
@@ -32,20 +32,23 @@ function App() {
   
   const pages = history[historyIndex];
 
-  // Revoke blob URLs helper to prevent memory leaks
-  const cleanupBlobs = useCallback((pageList: PageData[]) => {
-    pageList.forEach(p => {
-        if (p.originalUrl.startsWith('blob:')) URL.revokeObjectURL(p.originalUrl);
-        if (p.croppedUrl?.startsWith('blob:')) URL.revokeObjectURL(p.croppedUrl);
-    });
-  }, []);
+  // TRACKING BLOBS: Use a ref to track all created blobs for safe cleanup on unmount
+  const createdBlobsRef = useRef<Set<string>>(new Set());
 
-  // Cleanup on unmount
+  const registerBlob = (url: string) => {
+      if (url.startsWith('blob:')) {
+          createdBlobsRef.current.add(url);
+      }
+      return url;
+  };
+
+  // Robust Cleanup: Only run when the component unmounts
   useEffect(() => {
     return () => {
-        history.forEach(cleanupBlobs);
+        createdBlobsRef.current.forEach(url => URL.revokeObjectURL(url));
+        createdBlobsRef.current.clear();
     };
-  }, [history, cleanupBlobs]);
+  }, []);
 
   const pushHistory = (newPages: PageData[]) => {
       const newHistory = history.slice(0, historyIndex + 1);
@@ -110,11 +113,13 @@ function App() {
         if (file.type === 'application/pdf') {
           const imageUrls = await convertPdfToImages(file);
           imageUrls.forEach(url => {
-            newPages.push({ id: uuidv4(), originalUrl: url });
+            // Note: convertPdfToImages currently returns Data URLs (base64), 
+            // but if you switch to Blobs later, registerBlob handles it.
+            newPages.push({ id: uuidv4(), originalUrl: registerBlob(url) });
           });
         } else if (file.type.startsWith('image/')) {
           const url = URL.createObjectURL(file);
-          newPages.push({ id: uuidv4(), originalUrl: url });
+          newPages.push({ id: uuidv4(), originalUrl: registerBlob(url) });
         }
       }
       pushHistory([...pages, ...newPages]);
@@ -143,13 +148,14 @@ function App() {
     const page = pages[pageIndex];
     try {
         const croppedUrl = await cropImage(page.originalUrl, pixelCrop);
-        // Clean up previous cropped blob for this session if it existed
-        if (page.croppedUrl?.startsWith('blob:')) URL.revokeObjectURL(page.croppedUrl);
+        
+        // We don't revoke the old URL here immediately because it might exist in the Undo History.
+        // We rely on the unmount cleanup or explicit session reset.
         
         const updatedPages = [...pages];
         updatedPages[pageIndex] = {
             ...page,
-            croppedUrl: croppedUrl,
+            croppedUrl: registerBlob(croppedUrl),
             crop: percentCrop
         };
         pushHistory(updatedPages);
@@ -175,8 +181,7 @@ function App() {
                     height: (suggestion.height / 100) * dims.height,
                 };
                 const croppedUrl = await cropImage(page.originalUrl, pixelCrop);
-                if (page.croppedUrl?.startsWith('blob:')) URL.revokeObjectURL(page.croppedUrl);
-                return { ...page, croppedUrl: croppedUrl, crop: suggestion };
+                return { ...page, croppedUrl: registerBlob(croppedUrl), crop: suggestion };
             } catch (err) {
                 return page;
             }
@@ -250,7 +255,10 @@ function App() {
 
   const reset = () => {
     if (confirm("Clear all pages and start over?")) {
-        history.forEach(cleanupBlobs);
+        // Here we can safely clear old blobs because we are nuking the history
+        createdBlobsRef.current.forEach(url => URL.revokeObjectURL(url));
+        createdBlobsRef.current.clear();
+        
         setHistory([[]]);
         setHistoryIndex(0);
         setAppState(AppState.UPLOAD);
