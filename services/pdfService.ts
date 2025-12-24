@@ -17,7 +17,7 @@ try {
 
 // Helper: Convert any image to safe JPEG bytes for PDF embedding
 // This handles WebP, HEIC (if browser supports), and ensures clean headers
-const convertToJpegBytes = async (imageUrl: string): Promise<Uint8Array> => {
+const convertToJpegBytes = async (imageUrl: string, quality: number = 0.8): Promise<Uint8Array> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
     
@@ -48,7 +48,7 @@ const convertToJpegBytes = async (imageUrl: string): Promise<Uint8Array> => {
             return;
         }
         blob.arrayBuffer().then((buffer) => resolve(new Uint8Array(buffer))).catch(reject);
-      }, 'image/jpeg', 0.9);
+      }, 'image/jpeg', quality);
     };
 
     img.onerror = (e) => {
@@ -95,44 +95,29 @@ export const convertPdfToImages = async (file: File): Promise<string[]> => {
     // Cast to any to bypass strict type checking if types mismatch between local definitions and CDN
     await page.render(renderContext as any).promise;
 
-    const imageUrl = canvas.toDataURL('image/jpeg', 0.8);
+    const imageUrl = canvas.toDataURL('image/jpeg', 0.9);
     imageUrls.push(imageUrl);
   }
 
   return imageUrls;
 };
 
-export const generatePdfFromPages = async (pages: PageData[]): Promise<Uint8Array> => {
+export const generatePdfFromPages = async (pages: PageData[], quality: number = 0.8): Promise<Uint8Array> => {
   const pdfDoc = await PDFDocument.create();
 
   for (const page of pages) {
     const sourceUrl = page.croppedUrl || page.originalUrl;
     let pdfImage;
 
-    // Try direct embedding first (Fastest)
+    // To respect the export quality setting uniformly, we re-process all images via canvas.
+    // While direct embedding is faster, it ignores the user's compression preference.
+    // For a feature explicitly about "quality/compression", robust conversion is preferred over raw speed.
     try {
-        const imageBytes = await fetch(sourceUrl).then((res) => res.arrayBuffer());
-        try {
-            pdfImage = await pdfDoc.embedJpg(imageBytes);
-        } catch (e) {
-            // If JPG fails, try PNG
-            try {
-                pdfImage = await pdfDoc.embedPng(imageBytes);
-            } catch (e2) {
-                // If both fail, throw to trigger fallback
-                throw new Error("Format not supported directly");
-            }
-        }
-    } catch (directError) {
-        // Fallback: Convert to JPEG using Canvas (Robust)
-        // This fixes issues with WebP, or images with weird headers
-        try {
-            const safeBytes = await convertToJpegBytes(sourceUrl);
-            pdfImage = await pdfDoc.embedJpg(safeBytes);
-        } catch (fallbackError) {
-             console.error("Failed to embed image:", fallbackError);
-             continue; // Skip this page if it's completely unreadable
-        }
+        const safeBytes = await convertToJpegBytes(sourceUrl, quality);
+        pdfImage = await pdfDoc.embedJpg(safeBytes);
+    } catch (fallbackError) {
+         console.error("Failed to embed image:", fallbackError);
+         continue; // Skip this page if it's completely unreadable
     }
 
     if (!pdfImage) continue;
@@ -173,7 +158,7 @@ export const downloadPdf = (data: Uint8Array, filename: string) => {
 };
 
 // Helper to crop an image on client side before sending to PDF or displaying
-export const cropImage = (imageSrc: string, pixelCrop: { x: number, y: number, width: number, height: number }): Promise<string> => {
+export const cropImage = (imageSrc: string, pixelCrop: { x: number, y: number, width: number, height: number }, quality: number = 0.9): Promise<string> => {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.src = imageSrc;
@@ -204,7 +189,7 @@ export const cropImage = (imageSrc: string, pixelCrop: { x: number, y: number, w
         pixelCrop.height
       );
 
-      resolve(canvas.toDataURL('image/jpeg', 0.9));
+      resolve(canvas.toDataURL('image/jpeg', quality));
     };
     image.onerror = (e) => reject(e);
   });
